@@ -20,6 +20,9 @@ from utils.config import proxy_url_list, chatgpt_base_url_list, ark0se_token_url
 
 
 class ChatService:
+
+    global_data = {}
+
     def __init__(self, origin_token=None):
         self.user_agent = random.choice(user_agents_list) if user_agents_list else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
         self.req_token = get_req_token(origin_token)
@@ -300,6 +303,12 @@ class ChatService:
         try:
             url = f'{self.base_url}/conversation'
             stream = self.data.get("stream", False)
+
+            if ChatService.global_data.get("conversation_id"):
+                self.chat_request['conversation_id'] = ChatService.global_data.get("conversation_id")
+            if ChatService.global_data.get("parent_message_id"):
+                self.chat_request['parent_message_id'] = ChatService.global_data.get("parent_message_id")
+
             r = await self.s.post_stream(url, headers=self.chat_headers, json=self.chat_request, timeout=10,
                                          stream=True)
             if r.status_code != 200:

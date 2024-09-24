@@ -1,4 +1,5 @@
 import asyncio
+import re
 import types
 import warnings
 
@@ -74,8 +75,10 @@ async def send_conversation(request: Request, req_token: str = Depends(oauth2_sc
     chat_service, res = await async_retry(process, request_data, req_token)
     try:
         if isinstance(res, types.AsyncGeneratorType):
+            await record_message_id(res)
             background = BackgroundTask(chat_service.close_client)
-            return StreamingResponse(res, media_type="text/event-stream", background=background)
+            streaming_response = StreamingResponse(res, media_type="text/event-stream", background=background)
+            return streaming_response
         else:
             background = BackgroundTask(chat_service.close_client)
             return JSONResponse(res, media_type="application/json", background=background)
@@ -90,6 +93,36 @@ async def send_conversation(request: Request, req_token: str = Depends(oauth2_sc
         logger.error(f"Server error, {str(e)}")
         raise HTTPException(status_code=500, detail="Server error")
 
+
+async def record_message_id(res):
+    full_text = await process_stream(res)  # 获取流内容并打印
+    message_id_match = re.findall(r'"message_id":\s*"([a-zA-Z0-9-]+)"', full_text)
+    if message_id_match:
+        last_message_id = message_id_match[-1]  # 获取最后一个匹配的message_id
+        ChatService.global_data['parent_message_id'] = last_message_id
+    conversation_id_match = re.findall(r'"conversation_id":\s*"([a-zA-Z0-9-]+)"', full_text)
+    if conversation_id_match:
+        conversation_id = conversation_id_match[-1]  # 获取最后一个匹配的message_id
+        ChatService.global_data['conversation_id'] = conversation_id
+
+    # 创建一个新的异步生成器，重新生成内容用于 StreamingResponse
+    async def new_res():
+        for chunk in full_text.split("\n"):  # 假设流是通过换行符分割的
+            yield chunk
+
+
+async def process_stream(res):
+    content_chunks = []
+
+    # 遍历异步生成器，逐个获取流中的数据块
+    async for chunk in res:
+        if isinstance(chunk, bytes):
+            chunk = chunk.decode("utf-8")  # 假设是 UTF-8 编码的字节流
+        content_chunks.append(chunk)
+        print(f"Streaming chunk: {chunk}")  # 打印每个流块
+
+    # 将所有块组合成一个完整的字符串
+    return ''.join(content_chunks)
 
 @app.get(f"/{api_prefix}/tokens" if api_prefix else "/tokens", response_class=HTMLResponse)
 async def upload_html(request: Request):
