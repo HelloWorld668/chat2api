@@ -1,2 +1,2 @@
 export HISTORY_DISABLED=False
-python app.py
+nohup python app.py > output.log 2>&1 &
