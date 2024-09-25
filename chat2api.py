@@ -19,6 +19,8 @@ from chatgpt.reverseProxy import chatgpt_reverse_proxy
 from utils.Logger import logger
 from utils.config import api_prefix, scheduled_refresh
 from utils.retry import async_retry
+import itertools
+from fastapi import Request, HTTPException, BackgroundTasks
 
 warnings.filterwarnings("ignore")
 
@@ -67,49 +69,66 @@ async def process(request_data, req_token):
 
 
 @app.post(f"/{api_prefix}/v1/chat/completions" if api_prefix else "/v1/chat/completions")
-async def send_conversation(request: Request, req_token: str = Depends(oauth2_scheme)):
+async def send_conversation(request: Request,background_tasks: BackgroundTasks, req_token: str = Depends(oauth2_scheme)):
     try:
+        # 获取请求体数据
         request_data = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail={"error": "Invalid JSON body"})
+
     chat_service, res = await async_retry(process, request_data, req_token)
+
     try:
         if isinstance(res, types.AsyncGeneratorType):
-            await record_message_id(res)
+            # 累积流式结果
+            full_content = ""
+            async for chunk in res:
+                full_content += chunk
+
+            # 提取content字段并拼接成一句话
+            result_sentence = extract_content(full_content)
+
+            # 返回最终的完整句子
             background = BackgroundTask(chat_service.close_client)
-            streaming_response = StreamingResponse(res, media_type="text/event-stream", background=background)
-            return streaming_response
+            return JSONResponse(content={"result": result_sentence}, media_type="application/json", background=background)
+
         else:
             background = BackgroundTask(chat_service.close_client)
             return JSONResponse(res, media_type="application/json", background=background)
+
     except HTTPException as e:
         await chat_service.close_client()
         if e.status_code == 500:
             logger.error(f"Server error, {str(e)}")
             raise HTTPException(status_code=500, detail="Server error")
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+
     except Exception as e:
         await chat_service.close_client()
         logger.error(f"Server error, {str(e)}")
         raise HTTPException(status_code=500, detail="Server error")
 
 
-async def record_message_id(res):
-    full_text = await process_stream(res)  # 获取流内容并打印
-    message_id_match = re.findall(r'"message_id":\s*"([a-zA-Z0-9-]+)"', full_text)
+def extract_content(full_content):
+
+    # 提取 message_id 和 conversation_id
+    message_id_match = re.search(r'"message_id":\s*"([a-zA-Z0-9-]+)"', full_content)
     if message_id_match:
-        last_message_id = message_id_match[-1]  # 获取最后一个匹配的message_id
-        ChatService.global_data['parent_message_id'] = last_message_id
-    conversation_id_match = re.findall(r'"conversation_id":\s*"([a-zA-Z0-9-]+)"', full_text)
+        ChatService.global_data['parent_message_id'] = message_id_match.group(1)
+
+    conversation_id_match = re.search(r'"conversation_id":\s*"([a-zA-Z0-9-]+)"', full_content)
     if conversation_id_match:
-        conversation_id = conversation_id_match[-1]  # 获取最后一个匹配的message_id
-        ChatService.global_data['conversation_id'] = conversation_id
+        ChatService.global_data['conversation_id'] = conversation_id_match.group(1)
 
-    # 创建一个新的异步生成器，重新生成内容用于 StreamingResponse
-    async def new_res():
-        for chunk in full_text.split("\n"):  # 假设流是通过换行符分割的
-            yield chunk
 
+    # 使用正则表达式匹配所有 "content" 字段的内容
+    content_matches = re.findall(r'"content":\s*"([^"]*)"', full_content)
+
+    # 拼接所有的内容组成一句话
+    sentence = "".join(content_matches)
+    decoded_sentence = bytes(sentence, "utf-8").decode("unicode_escape")
+
+    return decoded_sentence
 
 async def process_stream(res):
     content_chunks = []
