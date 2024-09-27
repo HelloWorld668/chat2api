@@ -1,4 +1,6 @@
 import asyncio
+import html
+import json
 import re
 import types
 import warnings
@@ -122,13 +124,43 @@ def extract_content(full_content):
 
 
     # 使用正则表达式匹配所有 "content" 字段的内容
-    content_matches = re.findall(r'"content":\s*"([^"]*)"', full_content)
+    # content_matches = re.findall(r'"content":\s*"([^"]*)"', full_content)
 
     # 拼接所有的内容组成一句话
-    sentence = "".join(content_matches)
-    decoded_sentence = bytes(sentence, "utf-8").decode("unicode_escape")
+    # sentence = "".join(content_matches)
 
-    return decoded_sentence
+    content = ""
+    data_lines = full_content.strip().split("\n")
+
+    for line in data_lines:
+        try:
+            # 去掉 'data: ' 前缀，得到有效的 JSON 字符串
+            if line.startswith("data: "):
+                line = line[6:]
+            # 过滤掉 'data: [DONE]' 这样的无效数据
+            if line.strip() == "[DONE]":
+                continue
+
+            # 将字符串转换为JSON对象
+            chunk_data = json.loads(line)
+
+            # 提取content字段，如果存在
+            choices = chunk_data.get("choices", [])
+            if choices:
+                delta = choices[0].get("delta", {})
+                content_piece = delta.get("content", "")
+                content += content_piece
+
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON: {e}")
+            continue
+
+    return content
+
+def decode_unicode_escape(s):
+    # 正则替换 Unicode 代理对为实际字符
+    return re.sub(r'\\u([0-9a-fA-F]{4})', lambda x: chr(int(x.group(1), 16)), s)
+
 
 async def process_stream(res):
     content_chunks = []
